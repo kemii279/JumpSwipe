@@ -94,8 +94,8 @@
         {{ formatTime(item.duration) }}
       </div>
 
-      <!-- 視聴進捗バー -->
-      <div v-if="progressPct > 0" class="progress-bar">
+      <!-- 視聴進捗バー（1時間以上の動画のみ表示） -->
+      <div v-if="progressPct > 0 && (item.duration || 0) >= 3600" class="progress-bar">
         <div class="progress-fill" :style="{ width: progressPct + '%' }" />
       </div>
 
@@ -186,7 +186,8 @@ const displayTitle = computed(() => {
 })
 
 const progressPct = computed(() => calcProgress(props.item.watchedSeconds, props.item.duration))
-const isWatched = computed(() => progressPct.value >= 90)
+// 1時間以上の動画で、かつ90%以上視聴されている場合に「視聴済み」とする
+const isWatched = computed(() => (props.item.duration || 0) >= 3600 && progressPct.value >= 90)
 
 /**
  * サムネイルを解決して表示する

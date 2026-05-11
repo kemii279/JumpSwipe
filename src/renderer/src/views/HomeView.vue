@@ -42,7 +42,12 @@
           {{ descOrder ? '降順' : '昇順' }}
         </button>
         <SearchInput placeholder="ライブラリを検索..." @select="$emit('searchSelect', $event)" />
-        <button id="btn-home-settings" class="btn-settings" title="設定" @click="showSettings = true">
+        <button
+          id="btn-home-settings"
+          class="btn-settings"
+          title="設定"
+          @click="showSettings = true"
+        >
           <span class="material-icons">settings</span>
         </button>
         <button id="btn-home-add-folder" class="btn-add-folder" @click="showAddDialog">

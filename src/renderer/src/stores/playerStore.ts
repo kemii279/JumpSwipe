@@ -91,21 +91,29 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   /** 視聴進捗を保存 (定期的に呼び出す) */
-  async function saveProgress(watchedSeconds: number, duration: number): Promise<void> {
-    if (!currentItem.value || !currentSeriesFolderPath.value) return
+  async function saveProgress(
+    watchedSeconds: number,
+    duration: number,
+    manualItem: MediaItem | null = null,
+    manualSeriesPath: string = ''
+  ): Promise<void> {
+    const item = manualItem || currentItem.value
+    const seriesPath = manualSeriesPath || currentSeriesFolderPath.value
+
+    if (!item || !seriesPath) return
+
     const library = useLibraryStore()
     await library.setWatchProgress({
-      filePath: currentItem.value.filePath,
-      fileName: currentItem.value.fileName,
-      seriesFolderPath: currentSeriesFolderPath.value,
+      filePath: item.filePath,
+      fileName: item.fileName,
+      seriesFolderPath: seriesPath,
       watchedSeconds,
       duration
     })
-    // ローカルのitemも更新
-    if (currentItem.value) {
-      currentItem.value.watchedSeconds = watchedSeconds
-      currentItem.value.duration = duration
-    }
+
+    // メモリ上の値も更新
+    item.watchedSeconds = watchedSeconds
+    item.duration = duration
   }
 
   return {

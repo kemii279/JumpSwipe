@@ -528,7 +528,11 @@ function onSearchSelect(result: SearchResult) {
 }
 
 async function navigateToTarget(target: SearchResult) {
-  console.log('[DEBUG-SEARCH] SeriesView.navigateToTarget start:', target.fileName, target.targetFolderPath)
+  console.log(
+    '[DEBUG-SEARCH] SeriesView.navigateToTarget start:',
+    target.fileName,
+    target.targetFolderPath
+  )
 
   // 1. フォルダ階層の展開 (フォルダスタックの構築)
   const root = props.series.folderPath.replace(/[\\/]/g, '/')

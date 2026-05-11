@@ -14,9 +14,6 @@
         </template>
 
         <div class="banner-actions">
-          <button id="btn-next-play-now" class="btn-play-now" @click="$emit('playNow')">
-            今すぐ再生
-          </button>
           <button id="btn-next-cancel" class="btn-cancel" @click="$emit('cancel')">
             キャンセル
           </button>
@@ -44,7 +41,7 @@ const emit = defineEmits<{
   countdown: []
 }>()
 
-const TOTAL = computed(() => props.totalSeconds ?? 5)
+const TOTAL = computed(() => props.totalSeconds ?? 10)
 const remaining = ref(TOTAL.value)
 let timer: ReturnType<typeof setInterval> | null = null
 

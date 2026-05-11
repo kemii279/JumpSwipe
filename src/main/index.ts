@@ -332,7 +332,7 @@ async function readFolderIndex(folderPath: string): Promise<FolderIndex> {
     try {
       const data = await fs.readFile(indexPath, 'utf-8')
       if (!data.trim()) return { version: 1, folderPath, items: [] }
-      let parsed = JSON.parse(data) as FolderIndex
+      const parsed = JSON.parse(data) as FolderIndex
       if (!Array.isArray(parsed.items)) return { version: 1, folderPath, items: [] }
 
       let indexNeedsSave = false
@@ -620,7 +620,10 @@ async function scanFolder(folderPath: string, options: ScanOptions = {}): Promis
     const allScanResults = [...folders, ...videos, ...images, ...audios]
     for (const item of allScanResults) {
       const searchRes: SearchResult = {
-        id: item.type === 'folder' ? `folder-${seriesId}-${item.filePath}` : `${seriesId}-${item.filePath}-${item.fileName}`,
+        id:
+          item.type === 'folder'
+            ? `folder-${seriesId}-${item.filePath}`
+            : `${seriesId}-${item.filePath}-${item.fileName}`,
         fileName: item.fileName,
         filePath: item.filePath,
         targetFolderPath: folderPath,
@@ -634,7 +637,9 @@ async function scanFolder(folderPath: string, options: ScanOptions = {}): Promis
       searchCache.set(item.filePath, searchRes)
     }
     if (allScanResults.length > 0) {
-      console.log(`[DEBUG-SEARCH] Learned ${allScanResults.length} items. Sample: ID=${seriesId}, Name=${allScanResults[0].fileName}`)
+      console.log(
+        `[DEBUG-SEARCH] Learned ${allScanResults.length} items. Sample: ID=${seriesId}, Name=${allScanResults[0].fileName}`
+      )
     }
     saveSearchCache() // 非同期で保存
   }
@@ -965,6 +970,29 @@ function registerMediaProtocol(): void {
 }
 
 // ================================================================
+//  外部からのファイル起動サポート
+//  「このアプリで再生」から渡されたファイルパスを抽出するヘルパー
+// ================================================================
+const MEDIA_EXTS = new Set([...VIDEO_EXTS, ...IMAGE_EXTS, ...AUDIO_EXTS])
+
+function extractMediaFilesFromArgv(argv: string[]): string[] {
+  // Electron の argv には内部フラグが含まれるため、実ファイルパスのみ抽出する
+  // 開発環境では最初の引数がアプリ本体パスなので除外、本番環境では1つ目のみ除外
+  const skip = is.dev ? 2 : 1
+  return argv.slice(skip).filter((arg) => {
+    if (arg.startsWith('--') || arg.startsWith('-')) return false
+    const ext = extname(arg).toLowerCase()
+    return MEDIA_EXTS.has(ext) && existsSync(arg)
+  })
+}
+
+/**
+ * レンダラーが準備完了後に取りに来る初回起動ファイルのリスト。
+ * プル方式で渡すため、モジュールスコープで保持する。
+ */
+let pendingExternalFiles: string[] = []
+
+// ================================================================
 //  App 初期化
 // ================================================================
 const gotTheLock = app.requestSingleInstanceLock()
@@ -972,23 +1000,57 @@ const gotTheLock = app.requestSingleInstanceLock()
 if (!gotTheLock) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
-    const wins = BrowserWindow.getAllWindows()
-    if (wins.length > 0) {
-      if (wins[0].isMinimized()) wins[0].restore()
-      wins[0].focus()
-    }
-  })
+/** 複数ファイルを「このアプリで開く」したとき Windows が1ファイルずつ
+ *  second-instance を発火させる場合に備え、200ms バッファで集約する */
+let secondInstanceBuffer: string[] = []
+let secondInstanceTimer: ReturnType<typeof setTimeout> | null = null
+
+app.on('second-instance', (_event, argv) => {
+  const wins = BrowserWindow.getAllWindows()
+  if (wins.length === 0) return
+
+  if (wins[0].isMinimized()) wins[0].restore()
+  wins[0].focus()
+
+  const files = extractMediaFilesFromArgv(argv)
+  if (files.length === 0) return
+
+  // バッファに追加
+  secondInstanceBuffer.push(...files)
+
+  // 既存タイマーをリセットして 200ms 後に送信
+  if (secondInstanceTimer) clearTimeout(secondInstanceTimer)
+  secondInstanceTimer = setTimeout(() => {
+    const batch = [...secondInstanceBuffer]
+    secondInstanceBuffer = []
+    secondInstanceTimer = null
+    wins[0].webContents.send('external:open-files', batch)
+  }, 200)
+})
 
   app.whenReady().then(() => {
     electronApp.setAppUserModelId('com.jumpswipe')
 
     app.on('browser-window-created', (_, window) => {
       optimizer.watchWindowShortcuts(window)
+
+      // 開発中のみ F12 で DevTools を開けるようにする
+      if (is.dev) {
+        window.webContents.on('before-input-event', (_e, input) => {
+          if (input.key === 'F12') {
+            window.webContents.toggleDevTools()
+          }
+        })
+      }
     })
 
     registerMediaProtocol()
     loadSearchCache()
+
+    // 初回起動時に OS から渡されたファイルパスをメモリに保持する。
+    // プッシュ方式 (ready-to-show で送信) はレンダラーの準備完了前に屡いてメッセージが失われるため、
+    // レンダラーが準備完了後に自分で取りに行くプル方式を使用する。
+    pendingExternalFiles = extractMediaFilesFromArgv(process.argv)
 
     // ----------------------------------------------------------------
     //  IPC ハンドラー
@@ -997,6 +1059,14 @@ if (!gotTheLock) {
     // § folder:open — フォルダ選択ダイアログ
     ipcMain.handle('folder:open', async () => {
       return dialog.showOpenDialog({ properties: ['openDirectory'] })
+    })
+
+    // § external:get-initial-files — レンダラーが準備完了後に初回起動ファイルを取りに来るハンドラ
+    // 取得後は消去して二重表示を防ぐ
+    ipcMain.handle('external:get-initial-files', () => {
+      const files = pendingExternalFiles
+      pendingExternalFiles = []
+      return files
     })
 
     // § library:scan — 1階層スキャン
@@ -1276,10 +1346,15 @@ if (!gotTheLock) {
       if (scopePath) {
         targetSeries = library.series.filter((s) => scopePath.startsWith(s.folderPath))
       }
-      
-      console.log(`[DEBUG-SEARCH] === START SEARCH: "${query}" (Scope: ${scopePath || 'Global'}) ===`)
-      console.log(`[DEBUG-SEARCH] Target Series Paths:`, targetSeries.map(s => s.folderPath))
-      
+
+      console.log(
+        `[DEBUG-SEARCH] === START SEARCH: "${query}" (Scope: ${scopePath || 'Global'}) ===`
+      )
+      console.log(
+        `[DEBUG-SEARCH] Target Series Paths:`,
+        targetSeries.map((s) => s.folderPath)
+      )
+
       if (!query) return []
       const kanjiToNum = (s: string) => {
         const map: { [key: string]: string } = {
@@ -1297,7 +1372,6 @@ if (!gotTheLock) {
         }
         return s.replace(/[一二三四五六七八九〇十]/g, (m) => map[m])
       }
-
 
       const results: SearchResult[] = []
       const q = query.normalize('NFKC').toLowerCase()
@@ -1409,7 +1483,7 @@ if (!gotTheLock) {
           const normFolderName = folderName.normalize('NFKC').toLowerCase()
           const normFolderNameAlt = kanjiToNum(normFolderName)
 
-          const series = targetSeries.find(s => dir.startsWith(s.folderPath))
+          const series = targetSeries.find((s) => dir.startsWith(s.folderPath))
           if (!series) continue
 
           const folderRes: SearchResult = {
@@ -1426,7 +1500,11 @@ if (!gotTheLock) {
           currentScanItems.set(dir, folderRes)
 
           // マッチチェック
-          if (normFolderName.includes(q) || normFolderNameAlt.includes(q) || normFolderName.includes(qAlt)) {
+          if (
+            normFolderName.includes(q) ||
+            normFolderNameAlt.includes(q) ||
+            normFolderName.includes(qAlt)
+          ) {
             if (!foundPaths.has(dir) && results.length < MAX_RESULTS_LIMIT) {
               results.push(folderRes)
               foundPaths.add(dir)
@@ -1437,22 +1515,28 @@ if (!gotTheLock) {
           if (results.length >= MAX_RESULTS_LIMIT) break
 
           // 2. フォルダ内の中身を探索
-          const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => [] as import('fs').Dirent[])
+          const entries = await fs
+            .readdir(dir, { withFileTypes: true })
+            .catch(() => [] as import('fs').Dirent[])
           const indexPath = join(dir, INDEX_FILENAME)
-          
+
           let fileItems: { fileName: string; title?: string; isDirectory?: boolean }[] = []
           let indexExists = false
           try {
             await fs.access(indexPath)
             indexExists = true
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
 
           if (indexExists) {
             try {
               const indexData = await fs.readFile(indexPath, 'utf-8')
               const index: FolderIndex = JSON.parse(indexData)
               if (index.items) fileItems = index.items
-            } catch (e) { console.error(`Failed to read index at ${indexPath}:`, e) }
+            } catch (e) {
+              console.error(`Failed to read index at ${indexPath}:`, e)
+            }
           }
 
           if (fileItems.length === 0) {
@@ -1466,13 +1550,15 @@ if (!gotTheLock) {
           for (const item of fileItems) {
             const name = item.fileName
             const fullPath = join(dir, name)
-            
+
             let isDirectory = item.isDirectory
             if (isDirectory === undefined) {
               try {
                 const stats = await fs.stat(fullPath)
                 isDirectory = stats.isDirectory()
-              } catch { isDirectory = false }
+              } catch {
+                isDirectory = false
+              }
             }
 
             if (isDirectory) {
@@ -1489,7 +1575,10 @@ if (!gotTheLock) {
             const normTitleAlt = kanjiToNum(normTitle)
 
             const ext = extname(name).toLowerCase()
-            if (ext && (VIDEO_EXTS.includes(ext) || IMAGE_EXTS.includes(ext) || AUDIO_EXTS.includes(ext))) {
+            if (
+              ext &&
+              (VIDEO_EXTS.includes(ext) || IMAGE_EXTS.includes(ext) || AUDIO_EXTS.includes(ext))
+            ) {
               let type: 'video' | 'image' | 'audio' = 'video'
               if (IMAGE_EXTS.includes(ext)) type = 'image'
               else if (AUDIO_EXTS.includes(ext)) type = 'audio'
@@ -1509,8 +1598,12 @@ if (!gotTheLock) {
               currentScanItems.set(fullPath, fileRes)
 
               if (
-                normName.includes(q) || normNameAlt.includes(q) || normName.includes(qAlt) ||
-                normTitle.includes(q) || normTitleAlt.includes(q) || normTitle.includes(qAlt)
+                normName.includes(q) ||
+                normNameAlt.includes(q) ||
+                normName.includes(qAlt) ||
+                normTitle.includes(q) ||
+                normTitleAlt.includes(q) ||
+                normTitle.includes(qAlt)
               ) {
                 if (!foundPaths.has(fullPath) && results.length < MAX_RESULTS_LIMIT) {
                   results.push(fileRes)
@@ -1532,7 +1625,6 @@ if (!gotTheLock) {
               queue.push({ dir: subPath, depth: currentDepth + 1 })
             }
           }
-
         } catch (error) {
           console.error(`Search failed in ${dir}:`, error)
         }
@@ -1647,7 +1739,9 @@ if (!gotTheLock) {
       }
 
       // 現在のライブラリに存在するシリーズのみを抽出 (削除済みシリーズのキャッシュ混入対策)
-      const filteredResults = finalResults.filter((r) => r.isHomeShortcut || validSeriesIds.has(r.seriesId))
+      const filteredResults = finalResults.filter(
+        (r) => r.isHomeShortcut || validSeriesIds.has(r.seriesId)
+      )
 
       // 【最終チェック】UIに返す前に実体の存在を100%保証する (非同期一括チェック)
       const existences = await Promise.all(
@@ -1683,7 +1777,37 @@ if (!gotTheLock) {
       return { success: true }
     })
 
-    createWindow()
+    // ウィンドウを作成し、初回起動時のファイルがあれば表示後に送信
+    const win = new BrowserWindow({
+      width: 1400,
+      height: 900,
+      show: false,
+      autoHideMenuBar: true,
+      icon: nativeImage.createFromPath(
+        process.platform === 'win32' ? join(__dirname, '../../resources/icon.ico') : icon
+      ),
+      webPreferences: {
+        preload: join(__dirname, '../preload/index.js'),
+        sandbox: false
+      }
+    })
+
+    win.on('ready-to-show', () => {
+      win.show()
+      // ready-to-show でのプッシュ送信は廃止。
+      // レンダラーが external:get-initial-files を呼び出して取りに来る。
+    })
+
+    win.webContents.setWindowOpenHandler((details) => {
+      shell.openExternal(details.url)
+      return { action: 'deny' }
+    })
+
+    if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+      win.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    } else {
+      win.loadFile(join(__dirname, '../renderer/index.html'))
+    }
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()

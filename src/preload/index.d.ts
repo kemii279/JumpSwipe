@@ -55,6 +55,8 @@ declare global {
       setFullscreen(flag: boolean): Promise<boolean>
       getSettings(): Promise<AppSettings>
       updateSettings(settings: AppSettings): Promise<{ success: boolean }>
+      onOpenExternalFiles(callback: (filePaths: string[]) => void): () => void
+      getInitialFiles(): Promise<string[]>
     }
   }
 }

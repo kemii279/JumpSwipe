@@ -23,6 +23,9 @@
     <!-- プレイヤーモーダル（全画面に重なる） -->
     <PlayerModal />
 
+    <!-- 外部ファイル一時再生モーダル（PlayerModalより上のレイヤー） -->
+    <ExternalPlayerModal @jump-to-library="handleJumpAndPlay" />
+
     <!-- サイバークリックエフェクトレイヤー -->
     <CyberClickEffectLayer />
   </div>
@@ -31,14 +34,19 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useLibraryStore } from './stores/libraryStore'
+import { usePlayerStore } from './stores/playerStore'
+import { useExternalPlayerStore } from './stores/externalPlayerStore'
 import HomeView from './views/HomeView.vue'
 import SeriesView from './views/SeriesView.vue'
 import MaintenanceView from './views/MaintenanceView.vue'
 import PlayerModal from './components/PlayerModal.vue'
+import ExternalPlayerModal from './components/ExternalPlayerModal.vue'
 import CyberClickEffectLayer from './components/effects/CyberClickEffectLayer.vue'
 import type { SeriesEntry, SearchResult } from '../../types/media'
 
 const library = useLibraryStore()
+const player = usePlayerStore()
+const external = useExternalPlayerStore()
 
 type ViewName = 'home' | 'series' | 'maintenance'
 const currentView = ref<ViewName>('home')
@@ -59,10 +67,30 @@ onMounted(async () => {
   window.addEventListener('keydown', handleGlobalFullscreenShortcuts)
   await library.loadSeries()
   await library.loadSettings()
-})
 
-onUnmounted(() => {
-  window.removeEventListener('keydown', handleGlobalFullscreenShortcuts)
+  // OS の「このアプリで再生」からファイルが渡された場合に受信（起動後・別インスタンスから）
+  const unsubscribe = window.api.onOpenExternalFiles((filePaths: string[]) => {
+    // 通常再生中の場合は停止してから外部プレイヤーを起動（Q2仕様）
+    if (player.isModalOpen) {
+      player.close()
+    }
+    external.openFiles(filePaths)
+  })
+
+  // 初回起動時：メインプロセスが保持していたファイルをプル方式で取得
+  // プッシュ（ready-to-show で送信）だとレンダラーの準備前に届いて消えるため、
+  // Vue が onMounted した後にこちらから取りに行く方式にしている
+  const initialFiles = await window.api.getInitialFiles()
+  if (initialFiles.length > 0) {
+    if (player.isModalOpen) player.close()
+    external.openFiles(initialFiles)
+  }
+
+  // コンポーネント破棄時にリスナーを解除
+  onUnmounted(() => {
+    window.removeEventListener('keydown', handleGlobalFullscreenShortcuts)
+    unsubscribe()
+  })
 })
 
 function goToSeries(series: SeriesEntry): void {
@@ -85,7 +113,7 @@ function handleSearchSelect(result: SearchResult): void {
   // 2. 見つからない場合はパスで検索 (IDが古くなっている場合への対策)
   if (!series && result.filePath) {
     console.log('[DEBUG-SEARCH] Series ID not found, trying normalized path-based lookup...')
-    
+
     // 比較用にパスを正規化（小文字化 + スラッシュ統一）するヘルパー
     const normalize = (p: string) => p.replace(/[\\/]/g, '/').toLowerCase().replace(/\/$/, '')
     const targetPath = normalize(result.filePath)
@@ -105,8 +133,21 @@ function handleSearchSelect(result: SearchResult): void {
   } else {
     console.error('[DEBUG-SEARCH] Series not found for path:', result.filePath)
     // 最終手段: 全シリーズのパスをログに出力してデバッグ
-    console.log('[DEBUG-SEARCH] Available series paths:', library.series.map(s => s.folderPath))
+    console.log(
+      '[DEBUG-SEARCH] Available series paths:',
+      library.series.map((s) => s.folderPath)
+    )
   }
+}
+
+/**
+ * 外部プレイヤーの「通常再生として開く」から呼ばれる。
+ * handleSearchSelect を通じて SeriesView.navigateToTarget を起動し、
+ * フォルダ移動 + コンテンツ再生（player.open）を行う。
+ */
+function handleJumpAndPlay(result: SearchResult): void {
+  console.log('[JumpAndPlay] called with:', result)
+  handleSearchSelect(result)
 }
 
 function goToMaintenance(): void {

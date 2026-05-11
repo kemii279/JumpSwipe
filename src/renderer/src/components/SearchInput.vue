@@ -1,5 +1,5 @@
 <template>
-  <div class="search-container" v-click-outside="closeResults">
+  <div v-click-outside="closeResults" class="search-container">
     <div class="search-input-wrapper" :class="{ 'is-focused': isFocused }">
       <svg
         class="search-icon"
@@ -14,8 +14,8 @@
         <line x1="21" y1="21" x2="16.65" y2="16.65" />
       </svg>
       <input
-        type="text"
         v-model="query"
+        type="text"
         :placeholder="placeholder"
         @focus="isFocused = true"
         @input="onInput"
@@ -157,7 +157,7 @@ function selectResult(res: SearchResult) {
     seriesId: res.seriesId,
     targetFolderPath: res.targetFolderPath
   })
-  
+
   // すでに選択済みの場合は無視するが、短時間でリセットして再試行を可能にする
   if (hasSelected.value) {
     console.warn('[DEBUG-SEARCH] Already selected, ignoring duplicate call')
@@ -166,7 +166,7 @@ function selectResult(res: SearchResult) {
   hasSelected.value = true
 
   emit('select', res)
-  
+
   // 選択後に少し待ってからフラグをリセット（連続発火防止のみに留める）
   setTimeout(() => {
     hasSelected.value = false

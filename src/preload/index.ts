@@ -116,7 +116,18 @@ const api = {
 
   // § library:updateSettings — 設定更新
   updateSettings: (settings: AppSettings): Promise<{ success: boolean }> =>
-    ipcRenderer.invoke('library:updateSettings', settings)
+    ipcRenderer.invoke('library:updateSettings', settings),
+
+  // § external:open-files — OSからの「このアプリで再生」ファイル受信（起動後）
+  onOpenExternalFiles: (callback: (filePaths: string[]) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, filePaths: string[]): void => callback(filePaths)
+    ipcRenderer.on('external:open-files', listener)
+    // 購読解除関数を返す
+    return () => ipcRenderer.removeListener('external:open-files', listener)
+  },
+
+  // § external:get-initial-files — 初回起動時のファイルをレンダラー準備後にプルで取得
+  getInitialFiles: (): Promise<string[]> => ipcRenderer.invoke('external:get-initial-files')
 }
 
 if (process.contextIsolated) {

@@ -23,7 +23,9 @@
               <div class="setting-item">
                 <div class="setting-info">
                   <label>キーボードスクロール速度</label>
-                  <p class="setting-desc">矢印キー（上下）でスクロールする際の移動距離を設定します。</p>
+                  <p class="setting-desc">
+                    矢印キー（上下）でスクロールする際の移動距離を設定します。
+                  </p>
                 </div>
                 <div class="setting-control">
                   <input

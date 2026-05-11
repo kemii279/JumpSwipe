@@ -250,11 +250,18 @@ function handleKey(e: KeyboardEvent): void {
     emit('next')
   } else if (e.key === 'ArrowLeft') {
     e.preventDefault()
-    if (audioEl.value) audioEl.value.currentTime = Math.max(0, audioEl.value.currentTime - library.settings.videoSkipBack)
+    if (audioEl.value)
+      audioEl.value.currentTime = Math.max(
+        0,
+        audioEl.value.currentTime - library.settings.videoSkipBack
+      )
   } else if (e.key === 'ArrowRight') {
     e.preventDefault()
     if (audioEl.value)
-      audioEl.value.currentTime = Math.min(duration.value, audioEl.value.currentTime + library.settings.videoSkipForward)
+      audioEl.value.currentTime = Math.min(
+        duration.value,
+        audioEl.value.currentTime + library.settings.videoSkipForward
+      )
   }
 }
 

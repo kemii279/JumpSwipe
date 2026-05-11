@@ -61,6 +61,7 @@
                 :is-playing="player.isPlaying"
                 :volume="player.volume"
                 :is-muted="player.isMuted"
+                :initial-time="player.currentItem?.watchedSeconds"
                 :episode-title="player.currentItem?.title || player.currentItem?.fileName || ''"
                 :next-title="nextItemTitle"
                 :series-folder-path="player.currentSeriesFolderPath"
@@ -112,10 +113,26 @@ import VideoPlayer from './player/VideoPlayer.vue'
 import ImageViewer from './player/ImageViewer.vue'
 import AudioPlayer from './player/AudioPlayer.vue'
 import ToastNotification from './ToastNotification.vue'
+import type { MediaItem } from '../../../types/media'
 
 const player = usePlayerStore()
 const library = useLibraryStore()
 const toastRef = ref<InstanceType<typeof ToastNotification>>()
+
+// 閉じる際の状態消失を防ぐため、再生中のアイテム情報をローカルに保持
+const activeItem = ref<MediaItem | null>(null)
+const activeSeriesPath = ref('')
+
+watch(
+  () => player.currentItem,
+  (newItem) => {
+    if (newItem) {
+      activeItem.value = newItem
+      activeSeriesPath.value = player.currentSeriesFolderPath
+    }
+  },
+  { immediate: true }
+)
 
 const mediaUrl = computed(() => {
   if (!player.currentItem) return ''
@@ -169,7 +186,8 @@ async function onThumbnailCaptured(base64: string, seekTime: number): Promise<vo
 }
 
 async function onWatchProgress(seconds: number, duration: number): Promise<void> {
-  await player.saveProgress(seconds, duration)
+  // player.close() によってストアがクリアされた後でも保存できるよう、ローカル保持した情報を使う
+  await player.saveProgress(seconds, duration, activeItem.value, activeSeriesPath.value)
 }
 
 // ---- HERO設定 ----

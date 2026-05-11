@@ -6,9 +6,13 @@
       :src="src"
       controls
       preload="metadata"
+      tabindex="-1"
       @timeupdate="onTimeUpdate"
       @loadedmetadata="onMetadata"
       @ended="onEnded"
+      @click="onVideoClick"
+      @keydown="handleKeydown"
+      @ratechange="onRateChange"
     />
 
     <!-- 次話バナー -->
@@ -90,8 +94,24 @@
         </svg>
       </button>
     </div>
+
+    <!-- 再生速度表示 -->
+    <Transition name="speed-fade">
+      <div v-if="showSpeed" class="speed-badge">
+        <span class="speed-val">{{ currentSpeed.toFixed(2) }}</span>
+        <span class="speed-x">x</span>
+      </div>
+    </Transition>
   </div>
 </template>
+
+<script lang="ts">
+/**
+ * アプリ起動中（セッション内）のみ再生速度を保持するためのグローバル変数。
+ * ストア（永続化）するほどではないため、モジュールスコープのメモリ上で管理。
+ */
+let sessionPlaybackRate = 1.0
+</script>
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
@@ -105,6 +125,7 @@ const props = defineProps<{
   isPlaying: boolean
   volume: number
   isMuted: boolean
+  initialTime?: number
 }>()
 
 const emit = defineEmits<{
@@ -124,24 +145,16 @@ const thumbCaptureSuccess = ref(false)
 const showNextBanner = ref(false)
 const isEnded = ref(false)
 const isCancelled = ref(false)
+const showSpeed = ref(false)
+const currentSpeed = ref(1.0)
 
 let progressTimer: ReturnType<typeof setInterval> | null = null
 let flashTimer: ReturnType<typeof setTimeout> | null = null
+let speedTimer: ReturnType<typeof setTimeout> | null = null
 
 function onTimeUpdate(): void {
   if (!videoEl.value) return
   currentTime.value = videoEl.value.currentTime
-
-  // 終了30秒前にバナー表示 (次がある場合、かつキャンセルされていない場合)
-  if (
-    duration.value > 0 &&
-    duration.value - currentTime.value <= 30 &&
-    !showNextBanner.value &&
-    props.nextTitle &&
-    !isCancelled.value
-  ) {
-    showNextBanner.value = true
-  }
 }
 
 function onMetadata(): void {
@@ -149,6 +162,20 @@ function onMetadata(): void {
   duration.value = videoEl.value.duration
   videoEl.value.volume = props.volume
   videoEl.value.muted = props.isMuted
+  videoEl.value.playbackRate = sessionPlaybackRate
+  currentSpeed.value = sessionPlaybackRate
+
+  // 視聴進捗からの再開
+  // ※ 1時間（3600秒）以上の長い動画のみレジュームを適用（短い動画は常に最初から再生）
+  const IS_LONG_VIDEO = duration.value >= 3600
+  if (IS_LONG_VIDEO && props.initialTime && props.initialTime > 0) {
+    const remaining = duration.value - props.initialTime
+    // 最後の1分未満なら最初から（終了間際とみなす）
+    if (remaining > 60) {
+      videoEl.value.currentTime = props.initialTime
+    }
+  }
+
   if (props.isPlaying) videoEl.value.play().catch(() => {})
 }
 
@@ -165,6 +192,13 @@ function onEnded(): void {
 function onCancelBanner(): void {
   showNextBanner.value = false
   isCancelled.value = true
+}
+
+// ビデオ要素がフォーカスを奪って独自のショートカットを動かさないようにする
+function onVideoClick(): void {
+  if (videoEl.value) {
+    videoEl.value.blur()
+  }
 }
 
 // ---- サムネイルキャプチャ ----
@@ -190,43 +224,73 @@ async function onCaptureThumbnail(): Promise<void> {
   }, 2000)
 }
 
-function handleKeydown(e: KeyboardEvent) {
+function handleKeydown(e: KeyboardEvent): void {
   if (!videoEl.value) return
 
-  // Ctrlキーが押されている場合（次の動画・前の動画）
+  const keys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']
+  if (!keys.includes(e.key)) return
+
+  // Ctrl+Arrow は emit のみ行い、伝搬を止めない。
+  // ExternalPlayerModal など親が capture:true で同じイベントを受け取り、
+  // プレイリスト移動を行えるようにするため stopImmediatePropagation を呼ばない。
   if (e.ctrlKey) {
-    if (e.key === 'ArrowLeft') {
-      e.preventDefault()
-      emit('prev')
-    } else if (e.key === 'ArrowRight') {
-      e.preventDefault()
-      emit('next')
-    }
+    e.preventDefault()
+    if (e.key === 'ArrowLeft') emit('prev')
+    else if (e.key === 'ArrowRight') emit('next')
     return
   }
 
-  // Ctrlキーなし（シーク・倍速）
+  // Ctrl なし（シーク・倍速）はブラウザ標準挙動を抑制
+  e.preventDefault()
+  e.stopPropagation()
+  e.stopImmediatePropagation()
+
   if (e.key === 'ArrowLeft') {
-    e.preventDefault()
-    videoEl.value.currentTime = Math.max(0, videoEl.value.currentTime - library.settings.videoSkipBack)
+    videoEl.value.currentTime = Math.max(
+      0,
+      videoEl.value.currentTime - library.settings.videoSkipBack
+    )
   } else if (e.key === 'ArrowRight') {
-    e.preventDefault()
     videoEl.value.currentTime = Math.min(
       videoEl.value.duration || Infinity,
       videoEl.value.currentTime + library.settings.videoSkipForward
     )
   } else if (e.key === 'ArrowUp') {
-    e.preventDefault()
-    videoEl.value.playbackRate = Math.min(3.0, videoEl.value.playbackRate + 0.25)
+    updatePlaybackRate(0.25)
   } else if (e.key === 'ArrowDown') {
-    e.preventDefault()
-    videoEl.value.playbackRate = Math.max(0.25, videoEl.value.playbackRate - 0.25)
+    updatePlaybackRate(-0.25)
   }
+}
+
+function updatePlaybackRate(delta: number): void {
+  if (!videoEl.value) return
+  const newRate = Math.max(0.25, Math.min(3.0, videoEl.value.playbackRate + delta))
+  // これにより @ratechange が発火し、onRateChange() が呼ばれる
+  videoEl.value.playbackRate = newRate
+}
+
+function onRateChange(): void {
+  if (!videoEl.value) return
+  const newRate = videoEl.value.playbackRate
+
+  // セッション値を更新
+  sessionPlaybackRate = newRate
+  currentSpeed.value = newRate
+
+  // インジケーターを表示（キーボード操作・標準UI操作の両方で反応させる）
+  showSpeed.value = true
+  if (speedTimer) clearTimeout(speedTimer)
+  speedTimer = setTimeout(() => {
+    showSpeed.value = false
+  }, 500)
 }
 
 // ---- 視聴進捗の定期保存 ----
 onMounted(() => {
-  window.addEventListener('keydown', handleKeydown)
+  // capture: true にすることで、ビデオ要素のネイティブ処理よりも先に捕捉する
+  window.addEventListener('keydown', handleKeydown, { capture: true })
+
+  // 定期的な永続化（保存）は30秒おきに行う
   progressTimer = setInterval(() => {
     if (videoEl.value && duration.value > 0) {
       emit('watchProgress', videoEl.value.currentTime, duration.value)
@@ -235,14 +299,18 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  window.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener('keydown', handleKeydown, { capture: true })
   if (flashTimer) clearTimeout(flashTimer)
+  if (speedTimer) clearTimeout(speedTimer)
   if (progressTimer) clearInterval(progressTimer)
 
+  // 動画を閉じる際（終了時）に最新の進捗を保存
+  // ※ @timeupdate により currentTime は常に最新（5秒より高頻度）に更新されている
+  if (currentTime.value > 0 && duration.value > 0) {
+    emit('watchProgress', currentTime.value, duration.value)
+  }
+
   if (videoEl.value) {
-    if (duration.value > 0) {
-      emit('watchProgress', videoEl.value.currentTime, duration.value)
-    }
     videoEl.value.pause()
     videoEl.value.src = ''
     videoEl.value.load()
@@ -260,12 +328,14 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   overflow: hidden;
+  user-select: none; /* UIのテキスト選択を禁止 */
 }
 
 .video {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  outline: none; /* フォーカス時の枠線を消す */
 }
 
 /* ---- 右上アクションバー ---- */
@@ -358,5 +428,52 @@ onUnmounted(() => {
 .thumb-flash-leave-to {
   opacity: 0;
   transform: translateX(10px);
+}
+
+/* ---- 再生速度表示 ---- */
+.speed-badge {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2000;
+
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  padding: 20px 40px;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(20px);
+  border: 1.5px solid rgba(255, 255, 255, 0.2);
+  border-radius: 24px;
+  color: white;
+  pointer-events: none;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+}
+
+.speed-val {
+  font-size: 48px;
+  font-weight: 900;
+  font-family: 'Inter', sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+
+.speed-x {
+  font-size: 24px;
+  font-weight: 700;
+  opacity: 0.8;
+}
+
+.speed-fade-enter-active,
+.speed-fade-leave-active {
+  transition: all 0.2s cubic-bezier(0.2, 0, 0.2, 1);
+}
+.speed-fade-enter-from {
+  opacity: 0;
+  transform: translate(-50%, -40%) scale(0.9);
+}
+.speed-fade-leave-to {
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(1.1);
 }
 </style>
